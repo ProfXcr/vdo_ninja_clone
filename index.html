@@ -90,18 +90,24 @@ footer{color:#777d8b;font-size:.8rem;text-align:center;margin:18px 0 4px}
     if (!window.Peer) { setViewerStatus('Could not load the connection library. Check internet access.', 'bad'); return; }
     peer = new Peer();
     peer.on('open', () => {
-      const call = peer.call(streamId, undefined);
-      if (!call) { setViewerStatus('Could not start connection. Check the link.', 'bad'); return; }
-      call.on('stream', stream => {
-        $('remoteVideo').srcObject = stream;
-        $('remoteVideo').play().catch(()=>{});
-        setViewerStatus('Connected — video is live.', 'good');
+      // Ask the phone to call this viewer. PeerJS media calls require a stream
+      // from the caller, so the phone initiates the actual video call instead.
+      const connection = peer.connect(streamId, { reliable: true });
+      connection.on('open', () => setViewerStatus('Connected to phone; waiting for video…', ''));
+      connection.on('error', e => setViewerStatus('Signaling error: '+errText(e), 'bad'));
+      peer.on('call', call => {
+        call.answer();
+        call.on('stream', stream => {
+          $('remoteVideo').srcObject = stream;
+          $('remoteVideo').play().catch(()=>{});
+          setViewerStatus('Connected — video is live.', 'good');
+        });
+        call.on('close', () => setViewerStatus('Phone disconnected.', 'bad'));
+        call.on('error', e => setViewerStatus('Video error: '+errText(e), 'bad'));
       });
-      call.on('close', () => setViewerStatus('Phone disconnected.', 'bad'));
-      call.on('error', e => setViewerStatus('Connection error: '+errText(e), 'bad'));
       setTimeout(() => {
-        if (!$('remoteVideo').srcObject) setViewerStatus('Still connecting. Make sure the phone camera is started and both devices are online.', '');
-      }, 9000);
+        if (!$('remoteVideo').srcObject) setViewerStatus('Still waiting for video. Keep the phone page open with the camera running, and try refreshing this viewer.', '');
+      }, 10000);
     });
     peer.on('error', e => setViewerStatus('Connection error: '+errText(e), 'bad'));
     window.addEventListener('beforeunload', () => { try { peer.destroy(); } catch(e){} });
@@ -133,9 +139,15 @@ footer{color:#777d8b;font-size:.8rem;text-align:center;margin:18px 0 4px}
         show($('share')); $('stop').disabled = false;
         setStatus('Camera is live. Copy the viewer link into OBS.', 'good');
       });
-      peer.on('call', call => {
-        if (localStream) call.answer(localStream);
-        else call.close();
+      // The viewer first opens a data connection to this phone. Then the phone
+      // initiates the media call with its camera stream.
+      peer.on('connection', connection => {
+        connection.on('open', () => {
+          if (!localStream || !peer) return;
+          const call = peer.call(connection.peer, localStream);
+          if (!call) { setStatus('Could not start video call. Refresh the viewer link.', 'bad'); return; }
+          call.on('error', e => setStatus('Video connection error: '+errText(e), 'bad'));
+        });
       });
       peer.on('error', e => setStatus('Connection error: '+errText(e), 'bad'));
       setStatus('Starting camera and connection…');
