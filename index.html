@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101114">
+<title>PhoneCam — phone camera for OBS</title>
+<style>
+:root{color-scheme:dark;--bg:#101114;--panel:#191b21;--line:#30333d;--muted:#a5a9b6;--text:#f4f5f7;--accent:#8b9cff;--good:#73e0ae;--bad:#ff8e8e}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(ellipse at top,#20243a 0%,var(--bg) 55%);color:var(--text);font:16px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh}
+main{width:min(760px,100%);margin:auto;padding:clamp(18px,4vw,36px)}
+header{display:flex;align-items:center;gap:12px;margin-bottom:24px}
+.logo{display:grid;place-items:center;width:44px;height:44px;border-radius:14px;background:#303958;font-size:23px}
+h1{font-size:1.35rem;margin:0;letter-spacing:-.03em} .tag{font-size:.82rem;color:var(--muted)}
+.panel{background:rgba(25,27,33,.94);border:1px solid var(--line);border-radius:20px;padding:clamp(18px,4vw,26px);box-shadow:0 18px 55px #0003}
+h2{font-size:1.2rem;margin:0 0 6px} p{margin:8px 0;color:var(--muted)}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+button,select{font:inherit;border-radius:12px;border:1px solid var(--line);padding:12px 15px;background:#252832;color:var(--text)}
+button{cursor:pointer;font-weight:650}button.primary{background:var(--accent);border-color:var(--accent);color:#101321}button:disabled{opacity:.45;cursor:not-allowed}
+select{max-width:100%}
+.status{display:flex;align-items:center;gap:9px;color:var(--muted);font-size:.92rem;margin-top:16px}
+.dot{width:9px;height:9px;border-radius:50%;background:#737887}.dot.good{background:var(--good)}.dot.bad{background:var(--bad)}
+video{display:block;width:100%;max-height:65vh;aspect-ratio:16/9;object-fit:contain;background:#08090b;border-radius:14px;margin-top:18px}
+.linkbox{display:flex;gap:8px;margin-top:12px}.linkbox input{min-width:0;flex:1;background:#101217;color:#e8eaff;border:1px solid var(--line);border-radius:10px;padding:11px;font-size:.9rem}
+.hidden{display:none!important}.note{font-size:.85rem;margin-top:18px}.pill{display:inline-block;border:1px solid var(--line);padding:3px 9px;border-radius:999px;color:var(--muted);font-size:.78rem}
+footer{color:#777d8b;font-size:.8rem;text-align:center;margin:18px 0 4px}
+@media(max-width:480px){.linkbox{flex-direction:column}.linkbox button{width:100%}}
+</style>
+</head>
+<body>
+<main>
+<header><div class="logo">◉</div><div><h1>PhoneCam</h1><div class="tag">Your phone camera in OBS · No watermark</div></div></header>
+<section id="publisher" class="panel hidden">
+  <span class="pill">PHONE / CAMERA</span>
+  <h2 style="margin-top:12px">Use this phone as a camera</h2>
+  <p>Start the camera, then add the viewer link below as an OBS Browser Source.</p>
+  <div class="row">
+    <label>Quality
+      <select id="quality">
+        <option value="640x480">480p · most reliable</option>
+        <option value="1280x720" selected>720p · recommended</option>
+        <option value="1920x1080">1080p · if supported</option>
+      </select>
+    </label>
+    <label>Camera
+      <select id="facing"><option value="environment">Back camera</option><option value="user">Front camera</option></select>
+    </label>
+  </div>
+  <div class="row"><button id="start" class="primary">Start camera</button><button id="stop" disabled>Stop</button></div>
+  <div class="status"><span id="dot" class="dot"></span><span id="status">Camera is stopped.</span></div>
+  <video id="localVideo" autoplay playsinline muted class="hidden"></video>
+  <div id="share" class="hidden">
+    <p style="color:var(--text);font-weight:650;margin-top:18px">Your OBS viewer link</p>
+    <div class="linkbox"><input id="viewUrl" readonly aria-label="OBS viewer URL"><button id="copy" class="primary">Copy link</button></div>
+    <p class="note">In OBS: Sources → + → Browser → paste this link. Set the source width/height to your desired canvas size. Keep this phone page open while streaming.</p>
+  </div>
+</section>
+<section id="viewer" class="panel hidden">
+  <span class="pill">OBS / VIEWER</span>
+  <h2 style="margin-top:12px">Phone camera feed</h2>
+  <p id="viewerStatus">Connecting to phone…</p>
+  <video id="remoteVideo" autoplay playsinline controls></video>
+  <div class="status"><span id="viewerDot" class="dot"></span><span id="viewerStatus2">Waiting for video.</span></div>
+  <p class="note">For OBS, use this page URL as a Browser Source. If prompted, allow audio/video playback. This page contains no overlay or watermark.</p>
+</section>
+<section id="home" class="panel hidden">
+  <h2>Turn your phone into a webcam</h2>
+  <p>Open this page on your phone, allow camera access, then use the generated viewer link in OBS on your computer.</p>
+  <div class="row"><button class="primary" id="goCamera">Use this device as camera</button></div>
+</section>
+<footer>PhoneCam is an independent project. Keep your viewer link private.</footer>
+</main>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const params = new URLSearchParams(location.search);
+  const streamId = params.get('view');
+  const publisher = $('publisher'), viewer = $('viewer'), home = $('home');
+  let peer = null, localStream = null;
+  const setStatus = (text, kind='') => { $('status').textContent=text; $('dot').className='dot '+kind; };
+  const setViewerStatus = (text, kind='') => { $('viewerStatus2').textContent=text; $('viewerDot').className='dot '+kind; $('viewerStatus').textContent=text; };
+  function show(el){ el.classList.remove('hidden'); }
+  function errText(err){ return (err && (err.message || err.name)) ? `${err.name || 'Error'}: ${err.message || ''}` : String(err); }
+
+  if (streamId) {
+    show(viewer);
+    $('viewerStatus').textContent='Connecting to phone…';
+    if (!window.Peer) { setViewerStatus('Could not load the connection library. Check internet access.', 'bad'); return; }
+    peer = new Peer();
+    peer.on('open', () => {
+      const call = peer.call(streamId, undefined);
+      if (!call) { setViewerStatus('Could not start connection. Check the link.', 'bad'); return; }
+      call.on('stream', stream => {
+        $('remoteVideo').srcObject = stream;
+        $('remoteVideo').play().catch(()=>{});
+        setViewerStatus('Connected — video is live.', 'good');
+      });
+      call.on('close', () => setViewerStatus('Phone disconnected.', 'bad'));
+      call.on('error', e => setViewerStatus('Connection error: '+errText(e), 'bad'));
+      setTimeout(() => {
+        if (!$('remoteVideo').srcObject) setViewerStatus('Still connecting. Make sure the phone camera is started and both devices are online.', '');
+      }, 9000);
+    });
+    peer.on('error', e => setViewerStatus('Connection error: '+errText(e), 'bad'));
+    window.addEventListener('beforeunload', () => { try { peer.destroy(); } catch(e){} });
+    return;
+  }
+
+  show(home);
+  $('goCamera').addEventListener('click', () => {
+    home.classList.add('hidden'); show(publisher);
+  });
+  // Also make the main camera panel easy to reach after first click.
+  $('start').addEventListener('click', async () => {
+    $('start').disabled = true;
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('Camera access is unavailable. Open this site over HTTPS in Safari.');
+      const [w,h] = $('quality').value.split('x').map(Number);
+      localStream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: { facingMode: { ideal: $('facing').value }, width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: 30, max: 30 } }
+      });
+      $('localVideo').srcObject = localStream;
+      show($('localVideo'));
+      if (!window.Peer) throw new Error('Could not load PeerJS. Check your internet connection and reload.');
+      peer = new Peer();
+      peer.on('open', id => {
+        const url = new URL(location.href);
+        url.search = ''; url.searchParams.set('view', id);
+        $('viewUrl').value = url.toString();
+        show($('share')); $('stop').disabled = false;
+        setStatus('Camera is live. Copy the viewer link into OBS.', 'good');
+      });
+      peer.on('call', call => {
+        if (localStream) call.answer(localStream);
+        else call.close();
+      });
+      peer.on('error', e => setStatus('Connection error: '+errText(e), 'bad'));
+      setStatus('Starting camera and connection…');
+    } catch (e) {
+      if (localStream) { localStream.getTracks().forEach(t=>t.stop()); localStream=null; }
+      $('start').disabled = false;
+      setStatus(errText(e), 'bad');
+    }
+  });
+  $('stop').addEventListener('click', () => {
+    if (localStream) { localStream.getTracks().forEach(t=>t.stop()); localStream=null; }
+    if (peer) { peer.destroy(); peer=null; }
+    $('localVideo').srcObject=null; $('localVideo').classList.add('hidden');
+    $('share').classList.add('hidden'); $('stop').disabled=true; $('start').disabled=false;
+    setStatus('Camera is stopped.');
+  });
+  $('copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('viewUrl').value); $('copy').textContent='Copied!'; }
+    catch(e) { $('viewUrl').select(); document.execCommand('copy'); $('copy').textContent='Copied!'; }
+    setTimeout(()=>$('copy').textContent='Copy link',1600);
+  });
+})();
+</script>
+</body>
+</html>
